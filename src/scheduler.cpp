@@ -21,11 +21,12 @@ typedef struct core_info {
 std::queue<ProcessId_t> readyQ;
 
 CoreInfo core_info[NUMBER_OF_CORES];
-int core = 0;
+int core;
 bool initialized = false;
 
 void scheduler_init () {
     std::cout << "Init" << std::endl;
+    core = 0;
     // Initialize core_info array, we have 8 cores
     for (int i = 0; i < NUMBER_OF_CORES; i++) {
         core_info[i].running = InvalidProcessId();
@@ -33,7 +34,7 @@ void scheduler_init () {
         core_info[i].isTransitioning = false;
     }
     // Start low energy cores in low power state
-    for (int i = 3; i < NUMBER_OF_CORES; i++) {
+    for (int i = 1; i < NUMBER_OF_CORES; i++) {
         SetCState (i, C6);
         core_info[i].c_state = C6;
     }
@@ -57,7 +58,7 @@ void CreateProcess(ProcessId_t pid) {
             RunCore(core);
         }
         core++;
-        core = core % 8; // energy inefficient?
+        core = core % 1; // energy inefficient?
     }
     else {  // There is already a running process
         readyQ.push(pid);
@@ -107,16 +108,16 @@ void TimerInterrupt(Time_t now) {
         return;
     
     // Would FIFO be better?
-    for (int i = 0; i < 8; i++) {
-        if (isRunning(i) && !core_info[i].isTransitioning) {
-            SaveContext(core_info[i].running, i);
-            readyQ.push(core_info[i].running);
-            core_info[i].running = readyQ.front();
-            readyQ.pop();
-            LoadContext(core_info[i].running, i);
-            RunCore(i);
-        } // else turn off
-    }
+    // for (int i = 0; i < 8; i++) {
+    //     if (isRunning(i) && !core_info[i].isTransitioning) {
+    //         SaveContext(core_info[i].running, i);
+    //         readyQ.push(core_info[i].running);
+    //         core_info[i].running = readyQ.front();
+    //         readyQ.pop();
+    //         LoadContext(core_info[i].running, i);
+    //         RunCore(i);
+    //     } // else turn off
+    // }
 }
 
 void CStateTransitionComplete(CPUId_t core_id){
