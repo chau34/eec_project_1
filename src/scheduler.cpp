@@ -74,7 +74,7 @@ void CreateProcess(ProcessId_t pid) {
     int idx = 0;
     for (int i = 0; i < NUMBER_OF_CORES; i++) {
         CoreInfo* current = &core_info[i];
-        if (current->running == InvalidProcessId()) {
+        if (current->running == InvalidProcessId() && !current->isTransitioning) {
             // Possible candidate, in a lower CState
             if (!ideal)
                 ideal = current;
@@ -83,31 +83,14 @@ void CreateProcess(ProcessId_t pid) {
             idx = i;
         }
     }
-    core_info[idx].c_state = C1;
-    core_info[idx].isTransitioning = true;
-    core_info[idx].running = pid;
-    SetCState(idx, C1);
-
-    // possible logic bugs for code above, but this code below runs slower
-    // for (int i = 0; i < NUMBER_OF_CORES; i++) {
-    //     CoreInfo* current = &core_info[i];
-    //     if (current->running == InvalidProcessId() & !current->isTransitioning) {
-    //         // Possible candidate, in a lower CState
-    //         if (!ideal || current->c_state < ideal->c_state) {
-    //             ideal = current;
-    //             idx = i;
-    //         }
-    //     }
-    // }
-    // if (ideal) {
-    //     core_info[idx].isTransitioning = true;
-    //     core_info[idx].running = pid;
-    //     core_info[idx].c_state = C1;
-    //     SetCState(idx, C1);
-    // } else {
-    //     readyQ.push(pid);
-    // }
-
+    if (ideal) {
+        core_info[idx].c_state = C1;
+        core_info[idx].isTransitioning = true;
+        core_info[idx].running = pid;
+        SetCState(idx, C1);
+    } else {
+        readyQ.push(pid);
+    }
     return;
 }
 
