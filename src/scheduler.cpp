@@ -126,8 +126,9 @@ void ExitProcess(ProcessId_t pid) {
         RunCore(current_core);
     } else { // ATOMIC???
         core_info[current_core].running = InvalidProcessId();   // Nothing is running right now
-        core_info[current_core].c_state = C2;
-        SetCState(current_core, C2);
+        core_info[current_core].p_state = P1;
+        // core_info[current_core].isTransitioning = true; // Should be here?
+        SetPState(current_core, P1);
     }
 }
 
@@ -138,7 +139,10 @@ void TimerInterrupt(Time_t now) {
             current->ticks++;
             // std::cout << "i: " << i << " C: " << current->c_state << " P: " << current->p_state << " ";
             // Lower the c_state if this core is not running
-            if (!isRunning(i) && current->c_state < C6 && !current->isTransitioning && current->p_state >= P4) {
+            if (!isRunning(i) && current->p_state < P4 && !current->isTransitioning && current->c_state <= C1) {
+                current->p_state = (static_cast<PState_t> ((static_cast<int> (current->p_state)) + 1));
+                SetPState(i, current->p_state);
+            } else if (!isRunning(i) && current->c_state < C6 && !current->isTransitioning) {
                 current->c_state = (static_cast<CState_t> ((static_cast<int> (current->c_state)) + 1));
                 if (current->c_state == C5)
                     current->c_state = C6;
