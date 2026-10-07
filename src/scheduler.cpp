@@ -35,8 +35,9 @@ void scheduler_init () {
     }
     // Start low energy cores in low power state
     for (int i = NUMBER_OF_CORES / 2; i < NUMBER_OF_CORES; i++) {
-        SetCState (i, C6);
+        core_info[i].isTransitioning = true;
         core_info[i].c_state = C6;
+        SetCState (i, C6);
     }
     initialized = true;
 }
@@ -82,10 +83,31 @@ void CreateProcess(ProcessId_t pid) {
             idx = i;
         }
     }
-    SetCState(idx, C1);
     core_info[idx].c_state = C1;
     core_info[idx].isTransitioning = true;
     core_info[idx].running = pid;
+    SetCState(idx, C1);
+
+    // possible logic bugs for code above, but this code below runs slower
+    // for (int i = 0; i < NUMBER_OF_CORES; i++) {
+    //     CoreInfo* current = &core_info[i];
+    //     if (current->running == InvalidProcessId() & !current->isTransitioning) {
+    //         // Possible candidate, in a lower CState
+    //         if (!ideal || current->c_state < ideal->c_state) {
+    //             ideal = current;
+    //             idx = i;
+    //         }
+    //     }
+    // }
+    // if (ideal) {
+    //     core_info[idx].isTransitioning = true;
+    //     core_info[idx].running = pid;
+    //     core_info[idx].c_state = C1;
+    //     SetCState(idx, C1);
+    // } else {
+    //     readyQ.push(pid);
+    // }
+
     return;
 }
 
@@ -112,44 +134,55 @@ void ExitProcess(ProcessId_t pid) {
         readyQ.pop();
         LoadContext(core_info[current_core].running, current_core);
         RunCore(current_core);
-    }
-    else { // ATOMIC???
+    } else { // ATOMIC???
         core_info[current_core].running = InvalidProcessId();   // Nothing is running right now
-        core_info[current_core].c_state = C6;
-        SetCState(current_core, C6);
+        core_info[current_core].c_state = C2;
+        SetCState(current_core, C2);
     }
 }
 
 void TimerInterrupt(Time_t now) {
-    bool currently_running = false;
-    for (int i = 0; i < 8; i++) {
-        if (isRunning(i))
-            currently_running = true;
+    if (initialized) {
+        for (int i = 0; i < 8; i++) {
+            CoreInfo* current = &core_info[i];
+            if (!isRunning(i) && current->c_state < C6 && !current->isTransitioning) {
+                current->c_state = (static_cast<CState_t> ((static_cast<int> (current->c_state)) + 1));
+                if (current->c_state == C5)
+                    current->c_state = C6;
+                if (current->c_state == C6)
+                    current->isTransitioning = true;
+                SetCState(i, current->c_state);
+            }
+        }
     }
+
     // You received a timer interrupt. This is where you want to execute scheduling decisions
-    if(!currently_running)       // Nothing to do TODO: c7
-        return;
     // Someone was running
     if(readyQ.empty())                      // We have a running process but no other processes are waiting
         return;
     
     // Would FIFO be better?
-    for (int i = 0; i < 8; i++) {
-        if (isRunning(i) && !core_info[i].isTransitioning) {
-            SaveContext(core_info[i].running, i);
-            readyQ.push(core_info[i].running);
-            core_info[i].running = readyQ.front();
-            readyQ.pop();
-            LoadContext(core_info[i].running, i);
-            RunCore(i);
-        } // else turn off
-    }
+    // for (int i = 0; i < 8; i++) {
+    //     if (isRunning(i) && !core_info[i].isTransitioning) {
+    //         SaveContext(core_info[i].running, i);
+    //         readyQ.push(core_info[i].running);
+    //         core_info[i].running = readyQ.front();
+    //         readyQ.pop();
+    //         LoadContext(core_info[i].running, i);
+    //         RunCore(i);
+    //     } // else turn off
+    // }
 }
 
+/*
+ * Either from {C3, C4} → {C0, C1, C2} or anywhere to {C6, C7}
+ */
 void CStateTransitionComplete(CPUId_t core_id){
     core_info[core_id].isTransitioning = false;
-    LoadContext(core_info[core_id].running, core_id);
-    RunCore(core_id);
+    if (core_info[core_id].c_state == C1) {
+        LoadContext(core_info[core_id].running, core_id);
+        RunCore(core_id);
+    }
 }
 
 void SimulationComplete(Time_t now) {
