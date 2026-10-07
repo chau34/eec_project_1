@@ -34,7 +34,7 @@ void scheduler_init () {
         core_info[i].isTransitioning = false;
     }
     // Start low energy cores in low power state
-    for (int i = 1; i < NUMBER_OF_CORES; i++) {
+    for (int i = NUMBER_OF_CORES / 2; i < NUMBER_OF_CORES; i++) {
         SetCState (i, C6);
         core_info[i].c_state = C6;
     }
@@ -46,23 +46,47 @@ void CreateProcess(ProcessId_t pid) {
     SimOutput("CreateProcess(" + std::to_string(pid) + ")", 4);
     if (!initialized)
         scheduler_init();
-    if(core_info[core].running == InvalidProcessId()) {
-        if (core_info[core].c_state > C1 && !core_info[core].isTransitioning) {
-            SetCState(core, C1);
-            core_info[core].c_state = C1;
-            core_info[core].isTransitioning = true;
-            core_info[core].running = pid;
-        } else {
-            core_info[core].running = pid;
-            LoadContext(core_info[core].running, core); // loads running onto core 'n'
-            RunCore(core);
+
+    bool allRunning = true;
+
+    // Free core in C1 to use (ideal)
+    for (int i = 0; i < NUMBER_OF_CORES; i++) {
+        CoreInfo* current = &core_info[i];
+        if (current->running == InvalidProcessId())
+            allRunning = false;
+        if (current->running == InvalidProcessId() && current->c_state <= C1) {
+            current->running = pid;
+            LoadContext(current->running, i);
+            RunCore(i);
+            return;
         }
-        core++;
-        core = core % 1; // energy inefficient?
     }
-    else {  // There is already a running process
+    // All cores are running something, need to push to ready queue
+    if (allRunning == true || readyQ.size() < 10) {
         readyQ.push(pid);
+        return;
     }
+    
+    // There is no ideal core and we have a lot to run, find one to wakeup
+    // TODO: Learn abt c and p state
+    CoreInfo* ideal = NULL;
+    int idx = 0;
+    for (int i = 0; i < NUMBER_OF_CORES; i++) {
+        CoreInfo* current = &core_info[i];
+        if (current->running == InvalidProcessId()) {
+            // Possible candidate, in a lower CState
+            if (!ideal)
+                ideal = current;
+            if (current->c_state < ideal->c_state)
+                ideal = current;
+            idx = i;
+        }
+    }
+    SetCState(idx, C1);
+    core_info[idx].c_state = C1;
+    core_info[idx].isTransitioning = true;
+    core_info[idx].running = pid;
+    return;
 }
 
 int getCore (ProcessId_t pid) {
@@ -91,6 +115,8 @@ void ExitProcess(ProcessId_t pid) {
     }
     else { // ATOMIC???
         core_info[current_core].running = InvalidProcessId();   // Nothing is running right now
+        core_info[current_core].c_state = C6;
+        SetCState(current_core, C6);
     }
 }
 
@@ -108,16 +134,16 @@ void TimerInterrupt(Time_t now) {
         return;
     
     // Would FIFO be better?
-    // for (int i = 0; i < 8; i++) {
-    //     if (isRunning(i) && !core_info[i].isTransitioning) {
-    //         SaveContext(core_info[i].running, i);
-    //         readyQ.push(core_info[i].running);
-    //         core_info[i].running = readyQ.front();
-    //         readyQ.pop();
-    //         LoadContext(core_info[i].running, i);
-    //         RunCore(i);
-    //     } // else turn off
-    // }
+    for (int i = 0; i < 8; i++) {
+        if (isRunning(i) && !core_info[i].isTransitioning) {
+            SaveContext(core_info[i].running, i);
+            readyQ.push(core_info[i].running);
+            core_info[i].running = readyQ.front();
+            readyQ.pop();
+            LoadContext(core_info[i].running, i);
+            RunCore(i);
+        } // else turn off
+    }
 }
 
 void CStateTransitionComplete(CPUId_t core_id){
