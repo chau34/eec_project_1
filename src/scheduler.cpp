@@ -39,7 +39,7 @@ void scheduler_init () {
     }
     // Start low energy cores in low power state
     for (int i = NUMBER_OF_CORES / 2; i < NUMBER_OF_CORES; i++) {
-        core_info[i].isTransitioning = false;
+        core_info[i].isTransitioning = true;
         core_info[i].c_state = C6;
         SetCState (i, C6);
     }
@@ -59,15 +59,17 @@ void CreateProcess(ProcessId_t pid) {
         CoreInfo* current = &core_info[i];
         if (current->running == InvalidProcessId())
             allRunning = false;
-        if (current->running == InvalidProcessId() && current->c_state <= C1) {
+        if (current->running == InvalidProcessId() && current->c_state <= C1 && !current->isTransitioning) {
             current->running = pid;
+            current->p_state = P0;
+            SetPState(i, P0);
             LoadContext(current->running, i);
             RunCore(i);
             return;
         }
     }
     // All cores are running something, need to push to ready queue
-    if (allRunning == true || readyQ.size() < 10) {
+    if (allRunning || readyQ.size() < 400) {
         readyQ.push(pid);
         return;
     }
@@ -76,25 +78,22 @@ void CreateProcess(ProcessId_t pid) {
     // TODO: Learn abt c and p state
     CoreInfo* ideal = NULL;
     int idx = 0;
-    for (int i = 0; i < NUMBER_OF_CORES; i++) {
+    for (int i = NUMBER_OF_CORES - 1; i >= 0; i--) {
         CoreInfo* current = &core_info[i];
         if (current->running == InvalidProcessId() && !current->isTransitioning) {
             // Possible candidate, in a lower CState
-            if (!ideal)
+            if (!ideal || (current->c_state < ideal->c_state)) {
                 ideal = current;
-            if (current->c_state < ideal->c_state)
-                ideal = current;
-            idx = i;
+                idx = i;
+            }
         }
     }
-    if (ideal) {
+    if (ideal != NULL) {
         core_info[idx].c_state = C1;
-        core_info[idx].p_state = P0;
         core_info[idx].isTransitioning = true;
         core_info[idx].running = pid;
         core_info[idx].ticks = 0;
         SetCState(idx, C1);
-        SetPState(idx, P0);
     } else {
         readyQ.push(pid);
     }
@@ -133,10 +132,14 @@ void ExitProcess(ProcessId_t pid) {
 }
 
 void TimerInterrupt(Time_t now) {
+    // std::cout << readyQ.size() << std::endl;
+    bool awake = false;
     if (initialized) {
         for (int i = 0; i < NUMBER_OF_CORES; i++) {
             CoreInfo* current = &core_info[i];
             current->ticks++;
+            if (isRunning(i))
+                awake = true;
             // std::cout << "i: " << i << " C: " << current->c_state << " P: " << current->p_state << " ";
             // Lower the c_state if this core is not running
             if (!isRunning(i) && current->p_state < P4 && !current->isTransitioning && current->c_state <= C1) {
@@ -151,13 +154,13 @@ void TimerInterrupt(Time_t now) {
                 SetCState(i, current->c_state);
             // Preempt if our readyQ is growing larger than size 10
             } else if (isRunning(i) && !current->isTransitioning && readyQ.size() > 10) {
-                SaveContext(core_info[i].running, i);
-                readyQ.push(core_info[i].running);
-                core_info[i].running = readyQ.front();
-                readyQ.pop();
                 current->p_state = P0;
                 SetPState(i, current->p_state);
-                LoadContext(core_info[i].running, i);
+                SaveContext(current->running, i);
+                readyQ.push(current->running);
+                current->running = readyQ.front();
+                readyQ.pop();
+                LoadContext(current->running, i);
                 RunCore(i);
             } else if (isRunning(i) && !current->isTransitioning && current->p_state < P4) {
                 current->p_state = (static_cast<PState_t> ((static_cast<int> (current->p_state)) + 1));
@@ -165,31 +168,26 @@ void TimerInterrupt(Time_t now) {
             }
         }
     }
-    // std::cout << std::endl;
     // You received a timer interrupt. This is where you want to execute scheduling decisions
     // Someone was running
     if(readyQ.empty())                      // We have a running process but no other processes are waiting
         return;
-    
-    // Would FIFO be better?
-    // for (int i = 0; i < 8; i++) {
-    //     if (isRunning(i) && !core_info[i].isTransitioning) {
-    //         SaveContext(core_info[i].running, i);
-    //         readyQ.push(core_info[i].running);
-    //         core_info[i].running = readyQ.front();
-    //         readyQ.pop();
-    //         LoadContext(core_info[i].running, i);
-    //         RunCore(i);
-    //     } // else turn off
-    // }
+    // Ready Q has something in it
+    if (!awake) {
+        core_info[7].c_state = C1;
+        core_info[7].p_state = P4;
+        core_info[7].running = readyQ.front();
+        readyQ.pop();
+        SetCState(7, C1);
+    }
 }
 
 /*
  * Either from {C3, C4} → {C0, C1, C2} or anywhere to {C6, C7}
  */
 void CStateTransitionComplete(CPUId_t core_id){
-    // if (core_info[core_id].c_state == C6)
-        // std::cout << "C6" << std::endl;
+    // if (core_info[core_id].c_state == C1)
+    //     std::cout << "Here2" << std::endl;
     core_info[core_id].isTransitioning = false;
     if (core_info[core_id].c_state == C1) {
         LoadContext(core_info[core_id].running, core_id);
