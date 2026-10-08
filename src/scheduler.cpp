@@ -82,17 +82,17 @@ void scheduler_init () {
     initialized = true;
 }
 
-/* Returns if the core has nothing running, and is already in a powered on state while not transitioning */
-bool free_core_thresh (CoreInfo* core, CState_t c_state) {
-    return core->running == InvalidProcessId() && core->c_state <= c_state && !core->isTransitioning;
-}
-
 bool isRunning (int core) {
     return core_info[core].running != InvalidProcessId();
 }
 
 bool isValid (CoreInfo* core) {
     return !isRunning(core->idx) && !core->isTransitioning;
+}
+
+/* Returns if the core has nothing running, and is already in a powered on state while not transitioning */
+bool free_core_thresh (CoreInfo* core, CState_t c_state) {
+    return isValid(core) && core->c_state <= c_state;
 }
 
 bool schedule_ideal (ProcessId_t pid) {
