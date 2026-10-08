@@ -75,9 +75,10 @@ void scheduler_init () {
         core = &core_info[i];
         core->idx = i;
         reset_core (core);
-        /* Start small cores in powered down state */
+        // /* Start small cores in powered down state */
         if (i < NUMBER_OF_CORES / 2)
-            update_core (core, C6, P0, InvalidProcessId());
+            update_core (core, C4, P0, InvalidProcessId());
+            // update_core (core, C6, P0, InvalidProcessId());
     }
     initialized = true;
 }
@@ -97,7 +98,7 @@ bool free_core_thresh (CoreInfo* core, CState_t c_state) {
 
 bool schedule_ideal (ProcessId_t pid) {
     CoreInfo* core;
-    for (int i = 0; i < NUMBER_OF_CORES; i++) {
+    for (int i = NUMBER_OF_CORES - 1; i >= 0; i--) {
         core = &core_info[i];
 
         if (free_core_thresh(core, C1)) {
@@ -112,14 +113,28 @@ bool schedule_ideal (ProcessId_t pid) {
 
 bool schedule_sleeping (ProcessId_t pid) {
     CoreInfo* core = NULL;
-    for (int i = 0; i < NUMBER_OF_CORES; i++) {
+    for (int i = NUMBER_OF_CORES / 2; i < NUMBER_OF_CORES; i++) {
+       
         CoreInfo* candidate = &core_info[i];
         if (isValid(candidate)) {
-            // Possible candidate, in a lower CState
+            // Possible small core candidate, in a lower CState
             if (!core || (candidate->c_state < core->c_state)) {
                 core = candidate;
             }
         }
+    }
+
+    // can't find an available small core, wake up big core
+    if (core == NULL) {
+        for (int i = 0; i < NUMBER_OF_CORES / 2; i++) {
+            CoreInfo* candidate = &core_info[i];
+            if (isValid(candidate)) {
+                // Possible big core candidate, in a lower CState
+                if (!core || (candidate->c_state < core->c_state)) {
+                    core = candidate;
+                }
+            }
+        }    
     }
     
     if (core != NULL) {
@@ -140,6 +155,9 @@ bool existsIdle() {
 void CreateProcess(ProcessId_t pid) {
     // A new process has been created. Update the scheduler's data structures and decisions accordingly.
     SimOutput("CreateProcess(" + std::to_string(pid) + ")", 4);
+
+    if (!initialized)
+        scheduler_init();
 
     /* Look for ideal core first */
     if (schedule_ideal (pid))
@@ -231,7 +249,8 @@ void update_cores () {
     CoreInfo* core;
     for (int i = 0; i < NUMBER_OF_CORES; i++) {
         core = &core_info[i];
-        
+        // if (i < NUMBER_OF_CORES / 2)
+        //     std::cout << core_info[i].isTransitioning << core_info[i].c_state << std::endl;
         /* Lower C_States for Idle Cores */
         if (free_core_thresh(core, C4)) {
             CState_t c_state = inc_state (core->c_state);
@@ -296,7 +315,6 @@ void load_balancing () {
 
         int swaps = large_cores > small_cores ? small_cores : large_cores;
         for (int i = 0; i < swaps; i++) {
-            
             CoreInfo* large = getRunningLarge();
             CoreInfo* small = getIdleSmall();
             if (large && small) {
@@ -312,9 +330,10 @@ void load_balancing () {
 }
 
 void TimerInterrupt(Time_t now) {
-    if (!initialized)
+    if (!initialized) {
         scheduler_init();
-
+    }
+        
     if (initialized) {
         // TODO: can optimize further by checking ratio and wake up more than one core
         // debugPrinting();
@@ -328,8 +347,7 @@ void TimerInterrupt(Time_t now) {
  * Either from {C3, C4} → {C0, C1, C2} or anywhere to {C6, C7}
  */
 void CStateTransitionComplete(CPUId_t core_id){
-    // if (core_info[core_id].c_state == C6)
-    //     std::cout << "Here2" << std::endl;
+    //  std::cout << "TransDone core " << core_id << " cs=" << core_info[core_id].c_state << std::endl;
     core_info[core_id].isTransitioning = false;
     if (core_info[core_id].c_state == C1) {
         // std::cout << "Here: " << core_info[core_id].running << std::endl;
