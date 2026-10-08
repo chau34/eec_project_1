@@ -207,7 +207,7 @@ void wake_cores () {
 }
 
 void preempt (CoreInfo* core) {
-    core->p_state = P4;
+    core->p_state = P3;
     SetPState(core->idx, core->p_state); 
     SaveContext(core->running, core->idx);
     readyQ.push(core->running);
