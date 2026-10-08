@@ -101,7 +101,7 @@ bool schedule_ideal (ProcessId_t pid) {
         core = &core_info[i];
 
         if (free_core_thresh(core, C1)) {
-            update_core (core, C1, P0, pid);
+            update_core (core, C1, P4, pid);
             LoadContext(pid, i);
             RunCore(i);
             return true;
@@ -140,8 +140,6 @@ bool existsIdle() {
 void CreateProcess(ProcessId_t pid) {
     // A new process has been created. Update the scheduler's data structures and decisions accordingly.
     SimOutput("CreateProcess(" + std::to_string(pid) + ")", 4);
-    if (!initialized)
-        scheduler_init();
 
     /* Look for ideal core first */
     if (schedule_ideal (pid))
@@ -170,7 +168,7 @@ void ExitProcess(ProcessId_t pid) {
 
     /* We have more work to do, keep running */
     if(!readyQ.empty()){
-        update_core (core, core->c_state, P4, readyQ.front());
+        update_core (core, core->c_state, P1, readyQ.front());
         readyQ.pop();
 
         LoadContext(core_info[current_core].running, current_core);
@@ -251,9 +249,23 @@ void update_cores () {
     }
 }
 
+void debugPrinting() {
+    std::cout << "rQ: " << readyQ.size() << std::endl;
+    CoreInfo* core;
+    for (int i = 0; i < NUMBER_OF_CORES; i++) {
+        core = &core_info[i];
+        std::cout << "C:" << i << " CS:" << core->c_state << " PS:" << core->p_state << " | ";
+    }
+    std::cout << std::endl;
+}
+
 void TimerInterrupt(Time_t now) {
+    if (!initialized)
+        scheduler_init();
+
     if (initialized) {
         // TODO: can optimize further by checking ratio and wake up more than one core
+        // debugPrinting();
         wake_cores ();
         update_cores ();
     }
@@ -263,7 +275,7 @@ void TimerInterrupt(Time_t now) {
  * Either from {C3, C4} → {C0, C1, C2} or anywhere to {C6, C7}
  */
 void CStateTransitionComplete(CPUId_t core_id){
-    // if (core_info[core_id].c_state == C1)
+    // if (core_info[core_id].c_state == C6)
     //     std::cout << "Here2" << std::endl;
     core_info[core_id].isTransitioning = false;
     if (core_info[core_id].c_state == C1) {
