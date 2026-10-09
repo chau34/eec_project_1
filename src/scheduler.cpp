@@ -138,7 +138,6 @@ bool schedule_sleeping (ProcessId_t pid) {
     }
     
     if (core != NULL) {
-        core->ticks = 0;
         update_core (core, C1, core->p_state, pid);
         return true;
     }
@@ -249,8 +248,6 @@ void update_cores () {
     CoreInfo* core;
     for (int i = 0; i < NUMBER_OF_CORES; i++) {
         core = &core_info[i];
-        // if (i < NUMBER_OF_CORES / 2)
-        //     std::cout << core_info[i].isTransitioning << core_info[i].c_state << std::endl;
         /* Lower C_States for Idle Cores */
         if (free_core_thresh(core, C4)) {
             CState_t c_state = inc_state (core->c_state);
@@ -305,25 +302,38 @@ void load_balancing () {
         // Check how many cores are running where
         int small_cores = 0;
         int large_cores = 0;
-        
-        for (int i = 0; i < NUMBER_OF_CORES / 2; i++)
-            if (preemptable(&core_info[i]))
-                large_cores++;
-        for (int i = NUMBER_OF_CORES / 2; i < NUMBER_OF_CORES; i++)
-            if (isValid(&core_info[i]))
-                small_cores++;
 
+        for (int i = 0; i < NUMBER_OF_CORES; i++) {
+            CoreInfo* core = &core_info[i];
+            if (core->isTransitioning) {
+                core->ticks++;
+                if (core->ticks > 500) {
+                    core->ticks = 0;
+                    core->isTransitioning = false;
+                }
+            }
+        }
+        
+        for (int i = 0; i < NUMBER_OF_CORES / 2; i++) {
+            if (preemptable(&core_info[i])) {
+                large_cores++;
+            }
+        }
+        for (int i = NUMBER_OF_CORES / 2; i < NUMBER_OF_CORES; i++) {
+            if (isValid(&core_info[i])) {
+                small_cores++;
+            }
+        }
         int swaps = large_cores > small_cores ? small_cores : large_cores;
         for (int i = 0; i < swaps; i++) {
             CoreInfo* large = getRunningLarge();
             CoreInfo* small = getIdleSmall();
             if (large && small) {
-                SaveContext(large->running, large->idx);
-                readyQ.push(large->running);
+                ProcessId_t pid = large->running;
+                // Errors here
+                SaveContext(pid, large->idx);
                 update_core(large, C2, large->p_state, InvalidProcessId());
-                update_core(small, C1, P0, readyQ.front());
-                readyQ.pop();
-                std::cout << small->running << std::endl;
+                update_core(small, C1, P0, pid);
             }
         }
     }
@@ -336,9 +346,9 @@ void TimerInterrupt(Time_t now) {
         
     if (initialized) {
         // TODO: can optimize further by checking ratio and wake up more than one core
-        // debugPrinting();
+        // debugPrinting(); // Uncomment to print debug
         wake_cores ();
-        // load_balancing ();
+        // load_balancing (); // Currently buggy, might fix l8r
         update_cores ();
     }
 }
@@ -347,10 +357,8 @@ void TimerInterrupt(Time_t now) {
  * Either from {C3, C4} → {C0, C1, C2} or anywhere to {C6, C7}
  */
 void CStateTransitionComplete(CPUId_t core_id){
-    //  std::cout << "TransDone core " << core_id << " cs=" << core_info[core_id].c_state << std::endl;
     core_info[core_id].isTransitioning = false;
     if (core_info[core_id].c_state == C1) {
-        // std::cout << "Here: " << core_info[core_id].running << std::endl;
         LoadContext(core_info[core_id].running, core_id);
         RunCore(core_id);
     }
