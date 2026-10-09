@@ -27,7 +27,7 @@ CoreInfo core_info[NUMBER_OF_CORES];
 bool initialized = false;
 
 int getCore (ProcessId_t pid) {
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < NUMBER_OF_CORES; i++) {
         if (core_info[i].running == pid)
             return i;
     }
@@ -42,19 +42,22 @@ void reset_core (CoreInfo* core) {
     core->ticks = 0;
 }
 
-void update_core (CoreInfo* core, CState_t c_state, PState_t p_state, ProcessId_t pid) {
+
+// TODO: fix update_core because changing p states in here do not matter
+void update_core (CoreInfo* core, CState_t c_state, PState_t p_state, ProcessId_t pid, bool transition) {
     /* Don't update any core that is actively transitioning */
     if (!core->isTransitioning) {
         core->running = pid;
         /* Don't update state if we're already there */
-        if (p_state != core->p_state) {
-            core->p_state = p_state;
-            SetPState (core->idx, p_state);
-        }
+        // TODO: lwk not used because we should set after calling runcore()
+        // maybe make a separate helper and call after runcore()
+        // if (p_state != core->p_state) {
+        //     core->p_state = p_state;
+        //     SetPState (core->idx, p_state);
+        // }
         if (c_state != core->c_state) {
             core->c_state = c_state;
-            if (c_state == C6 || c_state == C1)
-                core->isTransitioning = true;
+            core->isTransitioning = transition;
             SetCState (core->idx, c_state);
         }
     }
@@ -77,7 +80,7 @@ void scheduler_init () {
         reset_core (core);
         // /* Start small cores in powered down state */
         if (i < NUMBER_OF_CORES / 2)
-            update_core (core, C4, P0, InvalidProcessId());
+            update_core (core, C4, P0, InvalidProcessId(), false);
             // update_core (core, C6, P0, InvalidProcessId());
     }
     initialized = true;
@@ -102,9 +105,11 @@ bool schedule_ideal (ProcessId_t pid) {
         core = &core_info[i];
 
         if (free_core_thresh(core, C1)) {
-            update_core (core, C1, P4, pid);
+            update_core (core, C1, P0, pid, false);
             LoadContext(pid, i);
             RunCore(i);
+            core->p_state = P0;
+            SetPState(core->idx, P0);
             return true;
         }
     }
@@ -138,7 +143,14 @@ bool schedule_sleeping (ProcessId_t pid) {
     }
     
     if (core != NULL) {
-        update_core (core, C1, core->p_state, pid);
+        bool transition = (core->c_state >= C3);
+        update_core (core, C1, core->p_state, pid, transition);
+        if (!transition) {
+            LoadContext(core->running, core->idx);
+            RunCore(core->idx);
+            core->p_state = P0;
+            SetPState(core->idx, core->p_state); 
+        }
         return true;
     }
     return false;
@@ -169,7 +181,9 @@ void CreateProcess(ProcessId_t pid) {
     }
     
     /* We don't have an ideal core and our readyQ is large */
-    schedule_sleeping (pid);
+    if (!schedule_sleeping (pid)) {
+        readyQ.push(pid);
+    }
 }
 
 void ExitProcess(ProcessId_t pid) {
@@ -185,40 +199,21 @@ void ExitProcess(ProcessId_t pid) {
 
     /* We have more work to do, keep running */
     if(!readyQ.empty()){
-        update_core (core, core->c_state, P0, readyQ.front());
-        readyQ.pop();
-
-        LoadContext(core_info[current_core].running, current_core);
-        RunCore(current_core);
-    } else { /* We are out of work, we can go to sleep */
-        update_core (core, C2, core->p_state, InvalidProcessId());
-    }
-}
-
-// return how many cores to run upon ratio of cores and work being 1 to 20 or less.
-// didn't change energy when I last run it... but I feel like this should be done
-int enoughCores() {
-    if (readyQ.size() == 0)
-        return 0;
-    int awakeCount = 0;
-    for (int i = 0; i < NUMBER_OF_CORES; i++) {
-        if (isRunning(i) && !core_info[i].isTransitioning)
-            awakeCount++;
-    }
-    if (awakeCount == 0)
-        return 1;
-    if ((readyQ.size() / awakeCount) > 20)
-        return (readyQ.size() / 20) - awakeCount;
-    return 0;
-}
-
-void wake_cores () {
-    int wakeup = enoughCores();
-    for (int i = 0; i < wakeup; i++)
-        if (schedule_sleeping(readyQ.front()))
+        // check if we're big core and there's not much work, go to sleep
+        if (readyQ.size() < 100 && current_core < NUMBER_OF_CORES / 2)
+            update_core (core, C2, core->p_state, InvalidProcessId(), false);
+        else {
+            update_core (core, core->c_state, P0, readyQ.front(), false);
             readyQ.pop();
-        else
-            return;
+
+            LoadContext(core_info[current_core].running, current_core);
+            RunCore(current_core);
+            core->p_state = P3;
+            SetPState(core->idx, core->p_state); 
+        }
+    } else { /* We are out of work, we can go to sleep */
+        update_core (core, C2, core->p_state, InvalidProcessId(), false);
+    }
 }
 
 void preempt (CoreInfo* core) {
@@ -253,7 +248,8 @@ void update_cores () {
             CState_t c_state = inc_state (core->c_state);
             if (c_state == C5)
                 c_state = C6;
-            update_core (core, c_state, core->p_state, core->running);
+            bool transition = c_state == C6;
+            update_core (core, c_state, core->p_state, core->running, transition);
         } 
 
         /* Preempt if our readyQ is growing larger than size 10 */ 
@@ -262,10 +258,11 @@ void update_cores () {
             preempt (core);
         } 
 
-        /* Nothing in Queue, Lower P_State */ 
-        else if (shouldLowerPStates (core)) {
-            update_core (core, core->c_state, inc_state (core->p_state), core->running);
-        }
+        /* Nothing in Queue, Lower P_State */
+        // TODO: this runs worse so I comment it out... I think we should keep it at P0/P3
+        // else if (shouldLowerPStates (core)) {
+        //     update_core (core, core->c_state, inc_state (core->p_state), core->running, false);
+        // }
     }
 }
 
@@ -302,17 +299,6 @@ void load_balancing () {
         // Check how many cores are running where
         int small_cores = 0;
         int large_cores = 0;
-
-        for (int i = 0; i < NUMBER_OF_CORES; i++) {
-            CoreInfo* core = &core_info[i];
-            if (core->isTransitioning) {
-                core->ticks++;
-                if (core->ticks > 500) {
-                    core->ticks = 0;
-                    core->isTransitioning = false;
-                }
-            }
-        }
         
         for (int i = 0; i < NUMBER_OF_CORES / 2; i++) {
             if (preemptable(&core_info[i])) {
@@ -332,11 +318,39 @@ void load_balancing () {
                 ProcessId_t pid = large->running;
                 // Errors here
                 SaveContext(pid, large->idx);
-                update_core(large, C2, large->p_state, InvalidProcessId());
-                update_core(small, C1, P0, pid);
+                update_core(large, C2, large->p_state, InvalidProcessId(), false);
+                bool transition = (small->c_state >= C3);
+                update_core(small, C1, P0, pid, transition);
             }
         }
     }
+}
+
+// return how many cores to run upon ratio of cores and work being 1 to 20 or less.
+// didn't change energy when I last run it... but I feel like this should be done
+int enoughCores() {
+    if (readyQ.size() == 0)
+        return 0;
+    int awakeCount = 0;
+    for (int i = 0; i < NUMBER_OF_CORES; i++) {
+        // make sure we don't overwake cores if it's transitioning to C1 to run
+        if (isRunning(i) || (core_info[i].isTransitioning && core_info[i].c_state == C1))
+            awakeCount++;
+    }
+    if (awakeCount == 0)
+        return 1;
+    if ((readyQ.size() / awakeCount) > 20)
+        return (readyQ.size() / 20) - awakeCount;
+    return 0;
+}
+
+void wake_cores () {
+    int wakeup = enoughCores();
+    for (int i = 0; i < wakeup; i++)
+        if (schedule_sleeping(readyQ.front()))
+            readyQ.pop();
+        else
+            return;
 }
 
 void TimerInterrupt(Time_t now) {
@@ -348,7 +362,7 @@ void TimerInterrupt(Time_t now) {
         // TODO: can optimize further by checking ratio and wake up more than one core
         // debugPrinting(); // Uncomment to print debug
         wake_cores ();
-        // load_balancing (); // Currently buggy, might fix l8r
+        // load_balancing (); // not buggy no more, but doesn't cause any change because load balance on exit process
         update_cores ();
     }
 }
