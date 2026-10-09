@@ -360,7 +360,7 @@ void CStateTransitionComplete(CPUId_t core_id){
     CoreInfo* core = &core_info[core_id];
     core->isTransitioning = false;
     if (core->c_state == C1 && core->running != InvalidProcessId()) {
-        LoadContext(core_info[core_id].running, core_id);
+        LoadContext(core->running, core_id);
         RunCore(core_id);
     }
 }
