@@ -357,8 +357,9 @@ void TimerInterrupt(Time_t now) {
  * Either from {C3, C4} → {C0, C1, C2} or anywhere to {C6, C7}
  */
 void CStateTransitionComplete(CPUId_t core_id){
-    core_info[core_id].isTransitioning = false;
-    if (core_info[core_id].c_state == C1) {
+    CoreInfo* core = &core_info[core_id];
+    core->isTransitioning = false;
+    if (core->c_state == C1 && core->running != InvalidProcessId()) {
         LoadContext(core_info[core_id].running, core_id);
         RunCore(core_id);
     }
