@@ -9,23 +9,34 @@
 #include <algorithm>
 #include "scheduler.hpp"
 
+/* Number of cores as defined in specs, first 4 are big, last 4 are small */
 #define NUMBER_OF_CORES 8
+/* Threshold for optimal size of readyQ for batching */
+#define READY_Q_THRESH 100
+/* Optimal ratio of processes per core */
+#define CORE_RATIO 20
+/* Defines the threshold where cores change from big->small */
+#define CORE_SIZE_CHANGE 4
 
+/* Core Info struct containing state information for the core */
 typedef struct core_info {
     CState_t c_state;
     PState_t p_state;
     ProcessId_t running;
     bool isTransitioning;
-    int ticks;
     int idx;
 } CoreInfo;
 
 
 std::queue<ProcessId_t> readyQ;
 
+/* Static array containing core_info structs to easily manipulate cores */
 CoreInfo core_info[NUMBER_OF_CORES];
+
+/* Initialization variable so we don't start scheduling before cores are set up */
 bool initialized = false;
 
+/* Gets core index from running pid */
 int getCore (ProcessId_t pid) {
     for (int i = 0; i < NUMBER_OF_CORES; i++) {
         if (core_info[i].running == pid)
@@ -34,27 +45,20 @@ int getCore (ProcessId_t pid) {
     return -1;
 }
 
+/* Used in init, sets all core state values to null equivalent */
 void reset_core (CoreInfo* core) {
     core->running = InvalidProcessId();
     core->c_state = C1;
     core->p_state = P0;
     core->isTransitioning = false;
-    core->ticks = 0;
 }
 
-
-// TODO: fix update_core because changing p states in here do not matter
-void update_core (CoreInfo* core, CState_t c_state, PState_t p_state, ProcessId_t pid, bool transition) {
+/* Helper function to update all states of a core at once safely */
+void update_core (CoreInfo* core, CState_t c_state, ProcessId_t pid, bool transition) {
     /* Don't update any core that is actively transitioning */
     if (!core->isTransitioning) {
         core->running = pid;
         /* Don't update state if we're already there */
-        // TODO: lwk not used because we should set after calling runcore()
-        // maybe make a separate helper and call after runcore()
-        // if (p_state != core->p_state) {
-        //     core->p_state = p_state;
-        //     SetPState (core->idx, p_state);
-        // }
         if (c_state != core->c_state) {
             core->c_state = c_state;
             core->isTransitioning = transition;
@@ -63,11 +67,19 @@ void update_core (CoreInfo* core, CState_t c_state, PState_t p_state, ProcessId_
     }
 }
 
+/* Updates p state of core to p_state */
+void updatePState(CoreInfo* core, PState_t p_state) {
+    core->p_state = p_state;
+    SetPState(core->idx, p_state);
+}
+
+/* Increment function for both state enum types */
 template <typename State>
 State inc_state (State state) {
     return (static_cast<State> ((static_cast<int> (state)) + 1));
 }
 
+/* Initializes all cores starting big cores in a powered down state */
 void scheduler_init () {
     std::cout << "Init" << std::endl;
 
@@ -78,23 +90,27 @@ void scheduler_init () {
         core = &core_info[i];
         core->idx = i;
         reset_core (core);
-        // /* Start small cores in powered down state */
-        if (i < NUMBER_OF_CORES / 2)
-            update_core (core, C4, P0, InvalidProcessId(), false);
-            // update_core (core, C6, P0, InvalidProcessId());
+        /* Start big cores in powered down state */
+        if (i < CORE_SIZE_CHANGE)
+            update_core (core, C4, InvalidProcessId(), false);
     }
     initialized = true;
 }
 
+/* Helper to check if the core at this index has a running pid */
 bool isRunning (int core) {
     return core_info[core].running != InvalidProcessId();
 }
 
+/* Hekper to check if the current core can be scheduled on */
 bool isValid (CoreInfo* core) {
     return !isRunning(core->idx) && !core->isTransitioning;
 }
 
-/* Returns if the core has nothing running, and is already in a powered on state while not transitioning */
+/* 
+ *  Returns if the core has nothing running, and is already in a powered 
+ *  on state while not transitioning under a certain threshold of c_state
+ */
 bool free_core_thresh (CoreInfo* core, CState_t c_state) {
     return isValid(core) && core->c_state <= c_state;
 }
@@ -105,36 +121,37 @@ bool schedule_ideal (ProcessId_t pid) {
         core = &core_info[i];
 
         if (free_core_thresh(core, C1)) {
-            update_core (core, C1, P0, pid, false);
+            update_core (core, C1, pid, false);
             LoadContext(pid, i);
             RunCore(i);
-            core->p_state = P0;
-            SetPState(core->idx, P0);
+            updatePState(core, P0);
             return true;
         }
     }
     return false;
 }
 
+/* Schedules this pid on a sleeping core and waking it up, returns false if not possible */
 bool schedule_sleeping (ProcessId_t pid) {
     CoreInfo* core = NULL;
-    for (int i = NUMBER_OF_CORES / 2; i < NUMBER_OF_CORES; i++) {
+    /* Check all small cores first */
+    for (int i = CORE_SIZE_CHANGE; i < NUMBER_OF_CORES; i++) {
        
         CoreInfo* candidate = &core_info[i];
         if (isValid(candidate)) {
-            // Possible small core candidate, in a lower CState
+            /* Possible small core candidate, in lowest CState */
             if (!core || (candidate->c_state < core->c_state)) {
                 core = candidate;
             }
         }
     }
 
-    // can't find an available small core, wake up big core
+    /* Can't find an available small core, wake up big core */
     if (core == NULL) {
-        for (int i = 0; i < NUMBER_OF_CORES / 2; i++) {
+        for (int i = 0; i < CORE_SIZE_CHANGE; i++) {
             CoreInfo* candidate = &core_info[i];
             if (isValid(candidate)) {
-                // Possible big core candidate, in a lower CState
+                /* Possible big core candidate, in lowest CState */
                 if (!core || (candidate->c_state < core->c_state)) {
                     core = candidate;
                 }
@@ -142,20 +159,21 @@ bool schedule_sleeping (ProcessId_t pid) {
         }    
     }
     
+    /* We found a core to wake up, so update it */
     if (core != NULL) {
         bool transition = (core->c_state >= C3);
-        update_core (core, C1, core->p_state, pid, transition);
+        update_core (core, C1, pid, transition);
         if (!transition) {
             LoadContext(core->running, core->idx);
             RunCore(core->idx);
-            core->p_state = P0;
-            SetPState(core->idx, core->p_state); 
+            updatePState(core, P0);
         }
         return true;
     }
     return false;
 } 
 
+/* Check if there exists a valid core in the system */
 bool existsIdle() {
     for (int i = 0; i < NUMBER_OF_CORES; i++)
         if (isValid(&core_info[i]))
@@ -175,7 +193,7 @@ void CreateProcess(ProcessId_t pid) {
         return;
 
     /* All cores are running something, or we can batch */
-    if (!existsIdle() || readyQ.size() < 100) { // TODO: Flipping existsIdle increases performance
+    if (!existsIdle() || readyQ.size() < READY_Q_THRESH) {
         readyQ.push(pid);
         return;
     }
@@ -199,26 +217,25 @@ void ExitProcess(ProcessId_t pid) {
 
     /* We have more work to do, keep running */
     if(!readyQ.empty()){
-        // check if we're big core and there's not much work, go to sleep
-        if (readyQ.size() < 100 && current_core < NUMBER_OF_CORES / 2)
-            update_core (core, C2, core->p_state, InvalidProcessId(), false);
+        /* check if we're big core and there's not much work, go to sleep */
+        if (readyQ.size() < READY_Q_THRESH && current_core < CORE_SIZE_CHANGE)
+            update_core (core, C4, InvalidProcessId(), false); /* Power down large cores quickly */
         else {
-            update_core (core, core->c_state, P0, readyQ.front(), false);
+            update_core (core, core->c_state, readyQ.front(), false);
             readyQ.pop();
 
             LoadContext(core_info[current_core].running, current_core);
             RunCore(current_core);
-            core->p_state = P3;
-            SetPState(core->idx, core->p_state); 
+            updatePState(core, P3); 
         }
     } else { /* We are out of work, we can go to sleep */
-        update_core (core, C2, core->p_state, InvalidProcessId(), false);
+        update_core (core, C2, InvalidProcessId(), false);
     }
 }
 
+/* Takes a core and preempts it */
 void preempt (CoreInfo* core) {
-    core->p_state = P3;
-    SetPState(core->idx, core->p_state); 
+    updatePState(core, P3);
     SaveContext(core->running, core->idx);
     readyQ.push(core->running);
     core->running = readyQ.front();
@@ -227,18 +244,12 @@ void preempt (CoreInfo* core) {
     RunCore(core->idx);
 }
 
+/* Checks if a core is preemptable */
 bool preemptable (CoreInfo* core) {
     return isRunning(core->idx) && !core->isTransitioning;
 }
 
-bool shouldPreempt (CoreInfo* core) {
-    return preemptable(core) && readyQ.size() > 10;
-}
-
-bool shouldLowerPStates (CoreInfo* core) {
-    return isRunning(core->idx) && !core->isTransitioning && readyQ.empty() && core->p_state < P4;
-}
-
+/* Runs every timer interrupt, updates cores C states and preempts */
 void update_cores () {
     CoreInfo* core;
     for (int i = 0; i < NUMBER_OF_CORES; i++) {
@@ -249,23 +260,17 @@ void update_cores () {
             if (c_state == C5)
                 c_state = C6;
             bool transition = c_state == C6;
-            update_core (core, c_state, core->p_state, core->running, transition);
+            update_core (core, c_state, core->running, transition);
         } 
 
-        /* Preempt if our readyQ is growing larger than size 10 */ 
-        else if (shouldPreempt (core)) {
-            // TODO: Investigate this line, p_state not honored, best is p4?
+        /* Preempt our cores if not idling */ 
+        else if (preemptable (core)) {
             preempt (core);
-        } 
-
-        /* Nothing in Queue, Lower P_State */
-        // TODO: this runs worse so I comment it out... I think we should keep it at P0/P3
-        // else if (shouldLowerPStates (core)) {
-        //     update_core (core, core->c_state, inc_state (core->p_state), core->running, false);
-        // }
+        }
     }
 }
 
+/* Debug print statements for all cores */
 void debugPrinting() {
     std::cout << "rQ: " << readyQ.size() << std::endl;
     CoreInfo* core;
@@ -276,8 +281,9 @@ void debugPrinting() {
     std::cout << std::endl;
 }
 
+/* Gets a preemptable big core */
 CoreInfo* getRunningLarge() {
-    for (int i = 0; i < NUMBER_OF_CORES / 2; i++) {
+    for (int i = 0; i < CORE_SIZE_CHANGE; i++) {
         CoreInfo* core = &core_info[i];
         if (preemptable(core))
             return core;
@@ -285,8 +291,9 @@ CoreInfo* getRunningLarge() {
     return NULL;
 }
 
+/* Gets a valid idle small core */
 CoreInfo* getIdleSmall() {
-    for (int i = NUMBER_OF_CORES / 2; i < NUMBER_OF_CORES; i++) {
+    for (int i = CORE_SIZE_CHANGE; i < NUMBER_OF_CORES; i++) {
         CoreInfo* core = &core_info[i];
         if (isValid(core))
             return core;
@@ -294,18 +301,19 @@ CoreInfo* getIdleSmall() {
     return NULL;
 }
 
+/* Not used, but kept for reference, functionality moved to exit process */
 void load_balancing () {
     if (readyQ.size() < 10) {
         // Check how many cores are running where
         int small_cores = 0;
         int large_cores = 0;
         
-        for (int i = 0; i < NUMBER_OF_CORES / 2; i++) {
+        for (int i = 0; i < CORE_SIZE_CHANGE; i++) {
             if (preemptable(&core_info[i])) {
                 large_cores++;
             }
         }
-        for (int i = NUMBER_OF_CORES / 2; i < NUMBER_OF_CORES; i++) {
+        for (int i = CORE_SIZE_CHANGE; i < NUMBER_OF_CORES; i++) {
             if (isValid(&core_info[i])) {
                 small_cores++;
             }
@@ -316,34 +324,33 @@ void load_balancing () {
             CoreInfo* small = getIdleSmall();
             if (large && small) {
                 ProcessId_t pid = large->running;
-                // Errors here
                 SaveContext(pid, large->idx);
-                update_core(large, C2, large->p_state, InvalidProcessId(), false);
+                update_core(large, C2, InvalidProcessId(), false);
                 bool transition = (small->c_state >= C3);
-                update_core(small, C1, P0, pid, transition);
+                update_core(small, C1, pid, transition);
             }
         }
     }
 }
 
-// return how many cores to run upon ratio of cores and work being 1 to 20 or less.
-// didn't change energy when I last run it... but I feel like this should be done
+/* Returns number of cores to run based on ratio of q size */
 int enoughCores() {
     if (readyQ.size() == 0)
         return 0;
     int awakeCount = 0;
     for (int i = 0; i < NUMBER_OF_CORES; i++) {
-        // make sure we don't overwake cores if it's transitioning to C1 to run
+        /* Don't overtake a core that's running, or one that's transitioning to C1 */
         if (isRunning(i) || (core_info[i].isTransitioning && core_info[i].c_state == C1))
             awakeCount++;
     }
     if (awakeCount == 0)
         return 1;
-    if ((readyQ.size() / awakeCount) > 20)
-        return (readyQ.size() / 20) - awakeCount;
+    if ((readyQ.size() / awakeCount) > CORE_RATIO)
+        return (readyQ.size() / CORE_RATIO) - awakeCount;
     return 0;
 }
 
+/* Helper function to wake up necesary sleeping cores */
 void wake_cores () {
     int wakeup = enoughCores();
     for (int i = 0; i < wakeup; i++)
@@ -359,10 +366,8 @@ void TimerInterrupt(Time_t now) {
     }
         
     if (initialized) {
-        // TODO: can optimize further by checking ratio and wake up more than one core
         // debugPrinting(); // Uncomment to print debug
         wake_cores ();
-        // load_balancing (); // not buggy no more, but doesn't cause any change because load balance on exit process
         update_cores ();
     }
 }
@@ -376,8 +381,7 @@ void CStateTransitionComplete(CPUId_t core_id){
     if (core->c_state == C1 && core->running != InvalidProcessId()) {
         LoadContext(core->running, core_id);
         RunCore(core_id);
-        core->p_state = P0;
-        SetPState(core->idx, core->p_state); 
+        updatePState(core, P0);
     }
 }
 
