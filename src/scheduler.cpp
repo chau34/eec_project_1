@@ -185,7 +185,7 @@ void ExitProcess(ProcessId_t pid) {
 
     /* We have more work to do, keep running */
     if(!readyQ.empty()){
-        update_core (core, core->c_state, P1, readyQ.front());
+        update_core (core, core->c_state, P0, readyQ.front());
         readyQ.pop();
 
         LoadContext(core_info[current_core].running, current_core);
@@ -362,6 +362,8 @@ void CStateTransitionComplete(CPUId_t core_id){
     if (core->c_state == C1 && core->running != InvalidProcessId()) {
         LoadContext(core->running, core_id);
         RunCore(core_id);
+        core->p_state = P0;
+        SetPState(core->idx, core->p_state); 
     }
 }
 
